@@ -33,34 +33,47 @@ type URL struct {
 
 // 原文: Telnet in Python / Encrypted Connections（URL.__init__）
 func ParseURL(raw string) (*URL, error) {
-	// data:<メディアタイプ>,<内容> は "://" を持たないので先に処理する。
+	// data:<メディアタイプ>,<内容> は "://" を持たないので先に判定する。
 	if rest, ok := strings.CutPrefix(raw, "data:"); ok {
-		mediaType, data, ok := strings.Cut(rest, ",")
-		if !ok {
-			return nil, fmt.Errorf("invalid data URL %q: missing ','", raw)
-		}
-		if strings.HasSuffix(mediaType, ";base64") {
-			return nil, fmt.Errorf("base64 data URL is not supported: %q", raw)
-		}
-		return &URL{Scheme: "data", Data: data}, nil
+		return parseData(raw, rest)
 	}
 
 	scheme, rest, ok := strings.Cut(raw, "://")
 	if !ok {
 		return nil, fmt.Errorf("invalid URL %q: missing scheme", raw)
 	}
-
-	// file:///path/goes/here は、ホストを持たず、"://" の後ろ全体がパスになる。
-	if scheme == "file" {
-		if !strings.HasPrefix(rest, "/") {
-			return nil, fmt.Errorf("invalid file URL %q: path must be absolute (file:///...)", raw)
-		}
-		return &URL{Scheme: scheme, Path: rest}, nil
-	}
-
-	if scheme != "http" && scheme != "https" {
+	switch scheme {
+	case "file":
+		return parseFile(raw, rest)
+	case "http", "https":
+		return parseHTTP(scheme, rest)
+	default:
 		return nil, fmt.Errorf("unsupported scheme %q", scheme)
 	}
+}
+
+// rest は "data:" の後ろ。"," より前がメディアタイプ、後ろ全体が内容になる。
+func parseData(raw, rest string) (*URL, error) {
+	mediaType, data, ok := strings.Cut(rest, ",")
+	if !ok {
+		return nil, fmt.Errorf("invalid data URL %q: missing ','", raw)
+	}
+	if strings.HasSuffix(mediaType, ";base64") {
+		return nil, fmt.Errorf("base64 data URL is not supported: %q", raw)
+	}
+	return &URL{Scheme: "data", Data: data}, nil
+}
+
+// file:///path/goes/here は、ホストを持たず、"://" の後ろ全体がパスになる。
+func parseFile(raw, rest string) (*URL, error) {
+	if !strings.HasPrefix(rest, "/") {
+		return nil, fmt.Errorf("invalid file URL %q: path must be absolute (file:///...)", raw)
+	}
+	return &URL{Scheme: "file", Path: rest}, nil
+}
+
+// rest は "://" の後ろ（ホスト[:ポート]とパス）。
+func parseHTTP(scheme, rest string) (*URL, error) {
 	u := &URL{Scheme: scheme}
 
 	if scheme == "http" {
