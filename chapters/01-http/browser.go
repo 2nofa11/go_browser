@@ -27,12 +27,25 @@ type URL struct {
 	// data スキームの内容そのもの。他のスキームでは空。
 	Data string
 
+	// true なら、ページを描画する代わりに、HTMLソースをそのまま表示する（view-source:）。
+	ViewSource bool
+
 	// nil ならシステムの証明書で検証する。テストで自己署名証明書を信頼するためだけに差し替える。
 	TLSConfig *tls.Config
 }
 
 // 原文: Telnet in Python / Encrypted Connections（URL.__init__）
 func ParseURL(raw string) (*URL, error) {
+	// view-source:<URL> は別のURLを包む。中身を普通に解析して、印だけ付ける。
+	if rest, ok := strings.CutPrefix(raw, "view-source:"); ok {
+		u, err := ParseURL(rest)
+		if err != nil {
+			return nil, err
+		}
+		u.ViewSource = true
+		return u, nil
+	}
+
 	// data:<メディアタイプ>,<内容> は "://" を持たないので先に判定する。
 	if rest, ok := strings.CutPrefix(raw, "data:"); ok {
 		return parseData(raw, rest)
@@ -210,13 +223,22 @@ func Show(w io.Writer, body string) {
 }
 
 // 原文: 演習1-4（エンティティ）
-var entities = strings.NewReplacer("&lt;", "<", "&gt;", ">")
+// &amp; も扱うのは、view-source で元の &lt; を &lt; のまま見せるため。
+var entities = strings.NewReplacer("&lt;", "<", "&gt;", ">", "&amp;", "&")
+
+// entities の逆変換。ソースをテキストとして Show に通すために使う。
+var escapeHTML = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // 原文: Displaying the HTML（load）
 func Load(w io.Writer, u *URL) error {
 	body, err := u.Request()
 	if err != nil {
 		return err
+	}
+	// 原文: 演習1-5（view-source）
+	// タグが Show に消されないよう、エスケープしてからテキストとして表示する。
+	if u.ViewSource {
+		body = escapeHTML.Replace(body)
 	}
 	Show(w, body)
 	return nil

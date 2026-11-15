@@ -18,16 +18,19 @@ func TestParseURL(t *testing.T) {
 		want    URL
 		wantErr bool
 	}{
-		{in: "http://example.org/index.html", want: URL{"http", "example.org", 80, "/index.html", "", nil}},
-		{in: "http://example.org", want: URL{"http", "example.org", 80, "/", "", nil}},
-		{in: "https://example.org/a/b", want: URL{"https", "example.org", 443, "/a/b", "", nil}},
-		{in: "http://example.org:8080/index.html", want: URL{"http", "example.org", 8080, "/index.html", "", nil}},
-		{in: "file:///path/goes/here", want: URL{"file", "", 0, "/path/goes/here", "", nil}},
+		{in: "http://example.org/index.html", want: URL{Scheme: "http", Host: "example.org", Port: 80, Path: "/index.html"}},
+		{in: "http://example.org", want: URL{Scheme: "http", Host: "example.org", Port: 80, Path: "/"}},
+		{in: "https://example.org/a/b", want: URL{Scheme: "https", Host: "example.org", Port: 443, Path: "/a/b"}},
+		{in: "http://example.org:8080/index.html", want: URL{Scheme: "http", Host: "example.org", Port: 8080, Path: "/index.html"}},
+		{in: "file:///path/goes/here", want: URL{Scheme: "file", Path: "/path/goes/here"}},
 		{in: "file://relative/path", wantErr: true},
-		{in: "data:text/html,Hello world!", want: URL{"data", "", 0, "", "Hello world!", nil}},
-		{in: "data:text/html,a,b", want: URL{"data", "", 0, "", "a,b", nil}}, // 最初の "," だけで区切る
-		{in: "data:text/html", wantErr: true},                                // "," がない
-		{in: "data:text/html;base64,SGVsbG8=", wantErr: true},                // base64 は未対応
+		{in: "view-source:http://example.org/", want: URL{Scheme: "http", Host: "example.org", Port: 80, Path: "/", ViewSource: true}},
+		{in: "view-source:data:text/html,hi", want: URL{Scheme: "data", Data: "hi", ViewSource: true}},
+		{in: "view-source:ftp://example.org/", wantErr: true}, // 中身のURLが不正なら、全体も不正
+		{in: "data:text/html,Hello world!", want: URL{Scheme: "data", Data: "Hello world!"}},
+		{in: "data:text/html,a,b", want: URL{Scheme: "data", Data: "a,b"}}, // 最初の "," だけで区切る
+		{in: "data:text/html", wantErr: true},                              // "," がない
+		{in: "data:text/html;base64,SGVsbG8=", wantErr: true},              // base64 は未対応
 		{in: "ftp://example.org/", wantErr: true},
 		{in: "example.org", wantErr: true},
 		{in: "http://example.org:abc/", wantErr: true},
@@ -59,7 +62,8 @@ func TestShowEntities(t *testing.T) {
 		{"<p>&lt;b&gt;bold&lt;/b&gt;</p>", "<b>bold</b>"}, // 本物のタグは消え、エンティティは文字になる
 		{"1 &lt; 2 &gt; 0", "1 < 2 > 0"},
 		{"&lt;&lt;", "<<"},
-		{"&amp;lt;", "&amp;lt;"}, // &amp; は未対応。&lt; に見える部分もないので変化しない
+		{"&amp;lt;", "&lt;"}, // 1回だけ変換する。&amp; → & の結果を、さらに &lt; として読み直さない
+		{"a &amp; b", "a & b"},
 	}
 	for _, tt := range tests {
 		var sb strings.Builder
@@ -140,6 +144,31 @@ func TestLoadData(t *testing.T) {
 	}
 	if got, want := sb.String(), "hi there"; got != want {
 		t.Errorf("Load output = %q, want %q", got, want)
+	}
+}
+
+func TestLoadViewSource(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"view-source:data:text/html,<b>hi</b>", "<b>hi</b>"},       // タグも含めて、そのまま見える
+		{"view-source:data:text/html,&lt;p&gt;", "&lt;p&gt;"},       // 元のエンティティも、元のまま見える
+		{"data:text/html,<b>hi</b>", "hi"},                          // view-source なしなら、今までどおり
+		{"view-source:data:text/html,<p>a & b</p>", "<p>a & b</p>"}, // & もそのまま
+	}
+	for _, tt := range tests {
+		u, err := ParseURL(tt.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sb strings.Builder
+		if err := Load(&sb, u); err != nil {
+			t.Fatal(err)
+		}
+		if got := sb.String(); got != tt.want {
+			t.Errorf("Load(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
