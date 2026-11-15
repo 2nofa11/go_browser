@@ -25,6 +25,9 @@ type URL struct {
 	Port   int
 	Path   string
 
+	// Data は data スキームの内容そのもの（data:text/html,<ここ>）。他のスキームでは空。
+	Data string
+
 	// TLSConfig が nil なら、システムの証明書で検証するデフォルト設定を使う。
 	// テストで自己署名証明書のサーバーに接続するためだけに差し替える。
 	TLSConfig *tls.Config
@@ -33,6 +36,20 @@ type URL struct {
 // 原文: Telnet in Python / Encrypted Connections（URL.__init__）
 // Python の assert は error 戻り値に置き換える。
 func ParseURL(raw string) (*URL, error) {
+	// 原文: 演習1-3（data スキーム）
+	// data:text/html,Hello world! は "://" を持たないので、先に別処理する。
+	// "," より前がメディアタイプ、後ろ全体が内容になる。
+	if rest, ok := strings.CutPrefix(raw, "data:"); ok {
+		mediaType, data, ok := strings.Cut(rest, ",")
+		if !ok {
+			return nil, fmt.Errorf("invalid data URL %q: missing ','", raw)
+		}
+		if strings.HasSuffix(mediaType, ";base64") {
+			return nil, fmt.Errorf("base64 data URL is not supported: %q", raw)
+		}
+		return &URL{Scheme: "data", Data: data}, nil
+	}
+
 	// url.split("://", 1)
 	scheme, rest, ok := strings.Cut(raw, "://")
 	if !ok {
@@ -82,6 +99,12 @@ func ParseURL(raw string) (*URL, error) {
 // 原文: Request and Response（URL.request）
 // レスポンスボディを返す。ステータスコードは検査せず、ボディをそのまま返す。
 func (u *URL) Request() (string, error) {
+	// 原文: 演習1-3（data スキーム）
+	// 内容はURLの中にあるので、ネットワークにもファイルにも触れずにそのまま返す。
+	if u.Scheme == "data" {
+		return u.Data, nil
+	}
+
 	// 原文: 演習1-2（file スキーム）
 	// ネットワークには出ず、ローカルのファイルをそのまま読んで返す。
 	if u.Scheme == "file" {

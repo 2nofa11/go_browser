@@ -18,12 +18,16 @@ func TestParseURL(t *testing.T) {
 		want    URL
 		wantErr bool
 	}{
-		{in: "http://example.org/index.html", want: URL{"http", "example.org", 80, "/index.html", nil}},
-		{in: "http://example.org", want: URL{"http", "example.org", 80, "/", nil}},
-		{in: "https://example.org/a/b", want: URL{"https", "example.org", 443, "/a/b", nil}},
-		{in: "http://example.org:8080/index.html", want: URL{"http", "example.org", 8080, "/index.html", nil}},
-		{in: "file:///path/goes/here", want: URL{"file", "", 0, "/path/goes/here", nil}},
+		{in: "http://example.org/index.html", want: URL{"http", "example.org", 80, "/index.html", "", nil}},
+		{in: "http://example.org", want: URL{"http", "example.org", 80, "/", "", nil}},
+		{in: "https://example.org/a/b", want: URL{"https", "example.org", 443, "/a/b", "", nil}},
+		{in: "http://example.org:8080/index.html", want: URL{"http", "example.org", 8080, "/index.html", "", nil}},
+		{in: "file:///path/goes/here", want: URL{"file", "", 0, "/path/goes/here", "", nil}},
 		{in: "file://relative/path", wantErr: true},
+		{in: "data:text/html,Hello world!", want: URL{"data", "", 0, "", "Hello world!", nil}},
+		{in: "data:text/html,a,b", want: URL{"data", "", 0, "", "a,b", nil}}, // 最初の "," だけで区切る
+		{in: "data:text/html", wantErr: true},                                // "," がない
+		{in: "data:text/html;base64,SGVsbG8=", wantErr: true},                // base64 は未対応
 		{in: "ftp://example.org/", wantErr: true},
 		{in: "example.org", wantErr: true},
 		{in: "http://example.org:abc/", wantErr: true},
@@ -102,6 +106,20 @@ func TestRequestFile(t *testing.T) {
 	}
 	if body != page {
 		t.Errorf("body = %q, want %q", body, page)
+	}
+}
+
+func TestLoadData(t *testing.T) {
+	u, err := ParseURL("data:text/html,<b>hi</b> there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	if err := Load(&sb, u); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sb.String(), "hi there"; got != want {
+		t.Errorf("Load output = %q, want %q", got, want)
 	}
 }
 
