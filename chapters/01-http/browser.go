@@ -11,6 +11,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -35,6 +37,14 @@ func ParseURL(raw string) (*URL, error) {
 	scheme, rest, ok := strings.Cut(raw, "://")
 	if !ok {
 		return nil, fmt.Errorf("invalid URL %q: missing scheme", raw)
+	}
+	// 原文: 演習1-2（file スキーム）
+	// file:///path/goes/here は、ホストを持たず、"://" の後ろ全体がファイルのパスになる。
+	if scheme == "file" {
+		if !strings.HasPrefix(rest, "/") {
+			return nil, fmt.Errorf("invalid file URL %q: path must be absolute (file:///...)", raw)
+		}
+		return &URL{Scheme: scheme, Path: rest}, nil
 	}
 	// assert self.scheme in ["http", "https"]
 	if scheme != "http" && scheme != "https" {
@@ -72,6 +82,16 @@ func ParseURL(raw string) (*URL, error) {
 // 原文: Request and Response（URL.request）
 // レスポンスボディを返す。ステータスコードは検査せず、ボディをそのまま返す。
 func (u *URL) Request() (string, error) {
+	// 原文: 演習1-2（file スキーム）
+	// ネットワークには出ず、ローカルのファイルをそのまま読んで返す。
+	if u.Scheme == "file" {
+		data, err := os.ReadFile(u.Path)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+
 	// s = socket.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) と s.connect(...)
 	// Goの net.Dial("tcp", ...) がソケット生成と接続をまとめて行う。
 	addr := net.JoinHostPort(u.Host, strconv.Itoa(u.Port))
@@ -92,10 +112,18 @@ func (u *URL) Request() (string, error) {
 	}
 	defer conn.Close() // s.close()
 
-	// request = "GET {} HTTP/1.0\r\n" ...; s.send(request.encode("utf8"))
+	// 原文: Request and Response / 演習1-1
+	// request = "GET {} HTTP/1.1\r\n" + ヘッダ + 空行; s.send(request.encode("utf8"))
 	// Goの string は UTF-8 のバイト列なので encode は不要。\r\n は厳密に守る。
-	request := fmt.Sprintf("GET %s HTTP/1.0\r\n", u.Path)
-	request += fmt.Sprintf("Host: %s\r\n", u.Host)
+	request := fmt.Sprintf("GET %s HTTP/1.1\r\n", u.Path)
+	requestHeaders := map[string]string{
+		"Host":       u.Host,
+		"Connection": "close",
+		"User-Agent": "go-browser",
+	}
+	for name, value := range requestHeaders {
+		request += fmt.Sprintf("%s: %s\r\n", name, value)
+	}
 	request += "\r\n"
 	if _, err := io.WriteString(conn, request); err != nil {
 		return "", err
@@ -176,13 +204,24 @@ func Load(w io.Writer, u *URL) error {
 	return nil
 }
 
+// 原文: 演習1-2（URLを指定せずに起動したときに開く、コンピューター上の特定のファイル）
+// 手早いテストに使えるファイルの URL（file:///...）を返す。
+func defaultURL() string {
+	// 実行場所（カレントディレクトリ）に依存しないよう、このソースファイルの位置を基準にする。
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return ""
+	}
+	return "file://" + filepath.Join(filepath.Dir(file), "testdata", "index.html")
+}
+
 // 原文: Displaying the HTML（if __name__ == "__main__": load(URL(sys.argv[1]))）
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: browser <url>")
-		os.Exit(2)
+	rawURL := defaultURL()
+	if len(os.Args) >= 2 {
+		rawURL = os.Args[1]
 	}
-	u, err := ParseURL(os.Args[1])
+	u, err := ParseURL(rawURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

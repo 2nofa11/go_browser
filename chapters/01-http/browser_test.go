@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,6 +22,8 @@ func TestParseURL(t *testing.T) {
 		{in: "http://example.org", want: URL{"http", "example.org", 80, "/", nil}},
 		{in: "https://example.org/a/b", want: URL{"https", "example.org", 443, "/a/b", nil}},
 		{in: "http://example.org:8080/index.html", want: URL{"http", "example.org", 8080, "/index.html", nil}},
+		{in: "file:///path/goes/here", want: URL{"file", "", 0, "/path/goes/here", nil}},
+		{in: "file://relative/path", wantErr: true},
 		{in: "ftp://example.org/", wantErr: true},
 		{in: "example.org", wantErr: true},
 		{in: "http://example.org:abc/", wantErr: true},
@@ -58,8 +62,8 @@ func handler(t *testing.T) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		if r.Proto != "HTTP/1.0" {
-			t.Errorf("proto = %q, want HTTP/1.0", r.Proto)
+		if r.Proto != "HTTP/1.1" {
+			t.Errorf("proto = %q, want HTTP/1.1", r.Proto)
 		}
 		fmt.Fprint(w, page)
 	}
@@ -79,6 +83,49 @@ func TestRequestHTTP(t *testing.T) {
 	}
 	if body != page {
 		t.Errorf("body = %q, want %q", body, page)
+	}
+}
+
+func TestRequestFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.html")
+	if err := os.WriteFile(path, []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := ParseURL("file://" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := u.Request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != page {
+		t.Errorf("body = %q, want %q", body, page)
+	}
+}
+
+func TestDefaultURL(t *testing.T) {
+	u, err := ParseURL(defaultURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := u.Request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "Hello, go_browser!") {
+		t.Errorf("default page body = %q", body)
+	}
+}
+
+func TestRequestFileNotFound(t *testing.T) {
+	u, err := ParseURL("file://" + filepath.Join(t.TempDir(), "missing.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Request(); err == nil {
+		t.Error("want error for a missing file, got nil")
 	}
 }
 
