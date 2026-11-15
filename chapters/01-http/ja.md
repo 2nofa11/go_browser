@@ -123,7 +123,7 @@ Connection: close
 
 ヘッダの後ろには空行があり、続いて大量の [HTML](https://developer.mozilla.org/en-US/docs/Web/HTML) コードが来ます。これはサーバーの応答の*ボディ*（body）と呼ばれます。ブラウザがそれをHTMLだと判断できるのは、`Content-Type` ヘッダが `text/html` だと言っているからです。Webページそのものの内容を含んでいるのが、このHTMLコードです。
 
-HTTPのリクエストとレスポンスのやり取りは、図4にまとめてあります。手作業での接続から、Python（原書の実装言語）に話を移しましょう。
+HTTPのリクエストとレスポンスのやり取りは、図4にまとめてあります。手作業での接続から、プログラムでの実装に話を移しましょう（原書の実装言語はPythonですが、このリポジトリではGoで実装します）。
 
 ![図4: HTTPのリクエストとレスポンスの組によって、Webブラウザはウェブサーバーからウェブページを取得する。](img/http-request-2.gif)
 
@@ -135,189 +135,224 @@ HTTPのリクエストとレスポンスのやり取りは、図4にまとめて
 >
 > Wikipediaには、HTTPの[ヘッダ](https://en.wikipedia.org/wiki/List_of_HTTP_header_fields)と[レスポンスコード](https://en.wikipedia.org/wiki/List_of_HTTP_status_codes)の優れた一覧があります。レスポンスコードの中には、[402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402)「Payment Required」のように、ほとんど使われないものもあります。このコードは「デジタル現金や（マイクロ）決済システム」で使うことを想定していました。eコマースはレスポンスコード402がなくても盛んですが、[マイクロペイメント](https://en.wikipedia.org/wiki/Micropayment)は（まだ？）あまり普及していません。それでも、私を含む多くの人が良いアイデアだと思っています。
 
-## PythonでのTelnet（Telnet in Python）
+## GoでのTelnet（Telnet in Python）
+
+> 訳注: 原書の見出しは「Telnet in Python」で、コードもPythonです。このリポジトリでは原書のPythonコードをGoに置き換えて読み進めます。以降のコードは [browser.go](browser.go) に対応します。
 
 ここまでは `telnet` を使って別のコンピューターと通信してきました。しかし `telnet` はごく単純なプログラムで、同じことをプログラムから行えます。そのためには、URLからホスト名とパスを取り出し、*ソケット*（socket）を作り、リクエストを送り、レスポンスを受け取る必要があります。[^13]
 
-まずURLの解析から始めましょう。URLの解析は `URL` オブジェクトを返すようにし、解析のコードはコンストラクタに入れます。
+まずURLの解析から始めましょう。Goにはクラスもコンストラクタもないので、`URL` という構造体（struct）を定義し、解析のコードは `ParseURL` というコンストラクタ代わりの関数に入れます。
 
-```python
-class URL:
-    def __init__(self, url):
-        # ...
+```go
+type URL struct {
+	Scheme string
+	Host   string
+	Port   int
+	Path   string
+}
+
+func ParseURL(raw string) (*URL, error) {
+	// ...
+}
 ```
 
-`__init__` メソッドはクラスのコンストラクタを表すPython独特の構文です。`self` パラメータは、どのメソッドでも必ず最初のパラメータにしなければならないもので、C++やJavaの `this` に相当するPythonのものです。
+`ParseURL` は、解析に失敗したときのために `error` も一緒に返します。Goには例外がなく、失敗は戻り値で伝えるのが慣習です。`Port` フィールドは後で使うので、先に用意しておきます。
 
 まずスキームから始めましょう。スキームは、URLの残りの部分と `://` で区切られています。私たちのブラウザがサポートするのは `http` だけなので、それも確認しておきます。
 
-```python
-class URL:
-    def __init__(self, url):
-        self.scheme, url = url.split("://", 1)
-        assert self.scheme == "http"
+```go
+func ParseURL(raw string) (*URL, error) {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		return nil, fmt.Errorf("invalid URL %q: missing scheme", raw)
+	}
+	if scheme != "http" {
+		return nil, fmt.Errorf("unsupported scheme %q", scheme)
+	}
+	u := &URL{Scheme: scheme}
+	// ...
+}
 ```
 
 次に、ホストとパスを分けなければなりません。ホストは最初の `/` の前にあり、パスはそのスラッシュとそれ以降のすべてです。
 
-```python
-class URL:
-    def __init__(self, url):
-        # ...
-        if "/" not in url:
-            url = url + "/"
-        self.host, url = url.split("/", 1)
-        self.path = "/" + url
+```go
+func ParseURL(raw string) (*URL, error) {
+	// ...
+	if !strings.Contains(rest, "/") {
+		rest += "/"
+	}
+	host, path, _ := strings.Cut(rest, "/")
+	u.Host = host
+	u.Path = "/" + path
+	return u, nil
+}
 ```
 
-（`# ...` を含むコードブロックは、このように既存のメソッドやブロックにコードを追加することを意味します。）`split(s, n)` メソッドは、文字列を最初の `n` 個の `s` の位置で分割します。ホスト名とパスの間のスラッシュの扱いに、少し込み入ったロジックがあることに注意してください。その（省略可能な）スラッシュはパスの一部です。
+（`// ...` を含むコードブロックは、このように既存の関数やブロックにコードを追加することを意味します。）`strings.Cut(s, sep)` は、文字列を最初の `sep` の位置で2つに分け、前半・後半・見つかったかどうかを返します。ホスト名とパスの間のスラッシュの扱いに、少し込み入ったロジックがあることに注意してください。その（省略可能な）スラッシュはパスの一部です。
 
-これで `URL` は `host` と `path` のフィールドを持ったので、そのURLのWebページをダウンロードできます。新しいメソッド `request` で行いましょう。
+これで `URL` は `Host` と `Path` のフィールドを持ったので、そのURLのWebページをダウンロードできます。新しいメソッド `Request` で行いましょう。
 
-```python
-class URL:
-    def request(self):
-        # ...
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+}
 ```
 
-Pythonではメソッドに必ず `self` パラメータを書く必要があることに注意してください。今後は、メソッドの定義をここまで大げさに説明することはしません。まだ存在しないメソッドや関数の中にコードがあるコードブロックを見たら、それはそのメソッドや関数を定義しているということです。
+Goでは、メソッドは関数名の前に*レシーバ*（receiver）`(u *URL)` を書いて定義します。レシーバは、C++やJavaの `this` にあたるものです。今後は、メソッドの定義をここまで大げさに説明することはしません。まだ存在しないメソッドや関数の中にコードがあるコードブロックを見たら、それはそのメソッドや関数を定義しているということです。
 
 Webページをダウンロードする最初のステップは、ホストへの接続です。OSはそのために「ソケット」という機能を提供しています。ほかのコンピューターと話したいとき（何かを伝えるためでも、相手が伝えてくるのを待つためでも）、ソケットを作ると、そのソケットで情報を双方向にやり取りできます。ほかのコンピューターと話す方法は複数あるため、ソケットにはいくつかの種類があります。
 
-- ソケットには*アドレスファミリ*（address family）があり、相手のコンピューターをどう見つけるかを示します。アドレスファミリの名前は `AF` で始まります。ここで使いたいのは `AF_INET` ですが、たとえば `AF_BLUETOOTH` などもあります。
+- ソケットには*アドレスファミリ*（address family）があり、相手のコンピューターをどう見つけるかを示します。OSのAPIでは名前が `AF` で始まり、たとえばIPv4なら `AF_INET`、Bluetoothなら `AF_BLUETOOTH` などがあります。
 
-- ソケットには*タイプ*（type）があり、どのような会話が行われるかを表します。タイプの名前は `SOCK` で始まります。ここで使いたいのは `SOCK_STREAM` で、これは各コンピューターが任意の量のデータを送れることを意味します。一方、`SOCK_DGRAM` というものもあり、こちらは一定サイズのパケットをやり取りします。[^14]
+- ソケットには*タイプ*（type）があり、どのような会話が行われるかを表します。名前は `SOCK` で始まります。ここで使いたいのは `SOCK_STREAM` で、これは各コンピューターが任意の量のデータを送れることを意味します。一方、`SOCK_DGRAM` というものもあり、こちらは一定サイズのパケットをやり取りします。[^14]
 
 - ソケットには*プロトコル*（protocol）があり、2台のコンピューターが接続を確立する手順を表します。プロトコルの名前はアドレスファミリによって変わりますが、ここで使いたいのは `IPPROTO_TCP` です。[^15]
 
-これらのオプションをすべて選ぶことで、次のようにソケットを作れます。[^16]
+Goでは、これらのオプションを1つずつ選ぶ代わりに、`net.Dial` に `"tcp"` という文字列を渡します。`"tcp"` は「ストリーム型（`SOCK_STREAM`）のTCP接続で、アドレスファミリはIPv4でもIPv6でも、名前解決の結果に合わせる」という意味です。[^16]
 
-```python
-import socket
+ソケットの作成と、相手のコンピューターへの接続は、`net.Dial` がまとめて行います。接続にはホストと*ポート*（port）が必要です。ポートは使うプロトコルによって決まります。今のところは80にします。
 
-class URL:
-    def request(self):
-        s = socket.socket(
-            family=socket.AF_INET,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
+```go
+func (u *URL) Request() (string, error) {
+	addr := net.JoinHostPort(u.Host, "80")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	// ...
+}
 ```
 
-ソケットができたら、相手のコンピューターに接続するよう指示する必要があります。そのためにはホストと*ポート*（port）が必要です。ポートは使うプロトコルによって決まります。今のところは80にします。
-
-```python
-class URL:
-    def request(self):
-        # ...
-        s.connect((self.host, 80))
-```
-
-これで `example.org` と通信して接続を確立し、両方のコンピューターがデータをやり取りできる状態になります。
+これで `example.org` と通信して接続を確立し、両方のコンピューターがデータをやり取りできる状態になります。接続を閉じる `conn.Close()` は、接続に成功した直後に `defer` で予約しておきます。`defer` した呼び出しは、関数がどの経路で終わるとき（途中の `return` でも）にも実行されるので、閉じ忘れを防げます。
 
 > **注意点（Quirk）**
 >
 > オフラインのときは、当然これは動きません。プロキシの内側にいる場合や、もっと複雑なさまざまなネットワーク環境でも動かないことがあります。回避策は環境によって異なります。プロキシを無効にするだけで済むかもしれませんし、もっとずっと複雑かもしれません。
 
-`connect` の呼び出しでは括弧が2つあることに注意してください。`connect` は引数を1つだけ取り、その引数がホストとポートの組だからです。アドレスファミリによって引数の数が異なるため、このようになっています。
+ホストとポートを `host + ":" + port` と文字列連結せず、`net.JoinHostPort` で組み立てている点に注意してください。IPv6アドレスは `::1` のようにコロンを含み、`[::1]:80` のように角括弧で囲む必要があります。`JoinHostPort` はその処理を代わりにやってくれます。
 
 > **さらに詳しく（Going Further）**
 >
-> Pythonがほぼそのまま実装している「ソケット」APIは、1983年の4.2 BSD Unix向けの元祖「[バークレーソケット](https://en.wikipedia.org/wiki/Berkeley_sockets)」APIの設計に由来します。もちろんWindowsやLinuxはこのAPIを再実装しているだけですが、macOSやiOSは、BSD Unixの流れをくむ大量のコードを[今も使っています](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/KernelProgramming/BSD/BSD.html)。
+> 「ソケット」APIは、1983年の4.2 BSD Unix向けの元祖「[バークレーソケット](https://en.wikipedia.org/wiki/Berkeley_sockets)」APIの設計に由来します。Goの `net` パッケージはこれを使いやすく包んだもので、中ではOSのソケットを呼び出しています。もちろんWindowsやLinuxはこのAPIを再実装しているだけですが、macOSやiOSは、BSD Unixの流れをくむ大量のコードを[今も使っています](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/KernelProgramming/BSD/BSD.html)。
 
 ## リクエストとレスポンス（Request and Response）
 
-接続ができたので、相手のサーバーにリクエストを送ります。そのために、`send` メソッドでデータを送ります。
+接続ができたので、相手のサーバーにリクエストを送ります。そのために、接続にデータを書き込みます。
 
-```python
-class URL:
-    def request(self):
-        # ...
-        request = "GET {} HTTP/1.0\r\n".format(self.path)
-        request += "Host: {}\r\n".format(self.host)
-        request += "\r\n"
-        s.send(request.encode("utf8"))
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	request := fmt.Sprintf("GET %s HTTP/1.0\r\n", u.Path)
+	request += fmt.Sprintf("Host: %s\r\n", u.Host)
+	request += "\r\n"
+	if _, err := io.WriteString(conn, request); err != nil {
+		return "", err
+	}
+}
 ```
 
-`send` メソッドは、リクエストをサーバーに送るだけです。[^17]このコードには、正確でなければならない点がいくつかあります。まず、改行には `\n` ではなく `\r\n` を使うことが非常に重要です。また、リクエストの最後に `\r\n` の改行を*2つ*置いて、末尾に空行を送ることも不可欠です。これを忘れると、相手のコンピューターはあなたがその改行を送ってくるのを待ち続け、あなたは相手の応答を待ち続けることになります。[^18]
+`io.WriteString` は、リクエストをサーバーに送るだけです。[^17]このコードには、正確でなければならない点がいくつかあります。まず、改行には `\n` ではなく `\r\n` を使うことが非常に重要です。また、リクエストの最後に `\r\n` の改行を*2つ*置いて、末尾に空行を送ることも不可欠です。これを忘れると、相手のコンピューターはあなたがその改行を送ってくるのを待ち続け、あなたは相手の応答を待ち続けることになります。[^18]
 
-`encode` の呼び出しにも注目してください。データを送るときは、送っているのは生のビットとバイトであり、それがテキストにも画像にも動画にもなりうることを覚えておく必要があります。しかしPythonの文字列は、特にテキストを表すためのものです。`encode` メソッドはテキストをバイト列に変換し、逆方向の `decode` メソッドもあります。[^19]Pythonは、テキストとバイト列に別々の型を与えることで、注意を促してくれます。
+文字列とバイト列の関係にも注目してください。データを送るときは、送っているのは生のビットとバイトであり、それがテキストにも画像にも動画にもなりうることを覚えておく必要があります。Goの `string` は不変のバイト列で、ソースコード中の文字列リテラルはUTF-8です。ですから、Pythonの `encode` のような変換は要りません。可変のバイト列は `[]byte` という別の型で、両者の変換は明示的に書きます。[^19]
 
-```python
->>> type("text")
-<class 'str'>
->>> type("text".encode("utf8"))
-<class 'bytes'>
+```go
+s := "text"
+b := []byte(s)
+fmt.Printf("%T %T\n", s, b) // string []uint8
 ```
 
-`str` と `bytes` に関するエラーが出たら、どこかで `encode` か `decode` を呼び忘れたということです。
+`string` と `[]byte` のどちらを渡すべきかでコンパイルエラーが出たら、どこかで `[]byte(...)` か `string(...)` の変換を忘れたということです。
 
-サーバーの応答を読むには、ソケットの `read` 関数を使って、すでに届いている応答の断片を受け取れます。そのうえで、届いた断片を集めるループを書きます。しかしPythonでは、そのループを隠してくれる `makefile` というヘルパー関数が使えます。[^20]
+サーバーの応答を読むには、接続の `Read` を使って、すでに届いている応答の断片を受け取れます。そのうえで、届いた断片を集めるループを書きます。しかしGoでは、そのループを隠してくれる `bufio.NewReader` が使えます。[^20]
 
-```python
-class URL:
-    def request(self):
-        # ...
-        response = s.makefile("r", encoding="utf8", newline="\r\n")
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	response := bufio.NewReader(conn)
+}
 ```
 
-ここで `makefile` は、サーバーから受け取ったすべてのバイトを含むファイルのようなオブジェクトを返します。私はPythonに、`utf8` *エンコーディング*（encoding）、つまりバイトを文字に対応付ける方式を使って、それらのバイトを文字列に変換するよう指示しています。[^21]また、HTTPの変わった改行コードもPythonに伝えています。
+ここで `bufio.NewReader` は、サーバーから受け取ったバイトを、行単位などで読めるようにしてくれるラッパーです。Goはバイトを自動で文字列にデコードしないので、読んだ内容はそのまま `string` に入ります。ここでは、バイトがUTF-8であるとみなして扱います。[^21]HTTPの変わった改行コード `\r\n` も、自動では処理されません。行を読むと末尾の `\r\n` が残るので、必要に応じて自分で取り除きます。
 
 では、応答をいくつかの部分に分割しましょう。最初の行はステータス行です。[^22]
 
-```python
-class URL:
-    def request(self):
-        # ...
-        statusline = response.readline()
-        version, status, explanation = statusline.split(" ", 2)
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	statusline, err := response.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("reading status line: %w", err)
+	}
+	parts := strings.SplitN(strings.TrimRight(statusline, "\r\n"), " ", 3)
+	if len(parts) < 2 {
+		return "", fmt.Errorf("malformed status line %q", statusline)
+	}
+	// parts[0] = バージョン, parts[1] = ステータスコード, parts[2] = 説明
+}
 ```
 
-サーバーのHTTPバージョンが自分のものと同じかどうかは確認*しない*ことに注意してください。確認するのは良い考えに思えるかもしれませんが、HTTP 1.0で話しかけてもHTTP 1.1で応答する設定ミスのサーバーが世の中にはたくさんあるのです。[^23]
+サーバーのHTTPバージョン（`parts[0]`）が自分のものと同じかどうかは確認*しない*ことに注意してください。確認するのは良い考えに思えるかもしれませんが、HTTP 1.0で話しかけてもHTTP 1.1で応答する設定ミスのサーバーが世の中にはたくさんあるのです。[^23]
 
 ステータス行の後ろにはヘッダが続きます。
 
-```python
-class URL:
-    def request(self):
-        # ...
-        response_headers = {}
-        while True:
-            line = response.readline()
-            if line == "\r\n": break
-            header, value = line.split(":", 1)
-            response_headers[header.casefold()] = value.strip()
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	headers := map[string]string{}
+	for {
+		line, err := response.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("reading headers: %w", err)
+		}
+		if line == "\r\n" {
+			break
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return "", fmt.Errorf("malformed header line %q", line)
+		}
+		headers[strings.ToLower(name)] = strings.TrimSpace(value)
+	}
+}
 ```
 
 ヘッダについては、各行を最初のコロンで分割して、ヘッダ名からヘッダ値へのマップ（map）を埋めていきます。ヘッダは大文字小文字を区別しないので、小文字に正規化します。[^24]また、HTTPヘッダ値の空白には意味がないので、前後の余分な空白は取り除きます。
 
 ヘッダはあらゆる種類の情報を表せますが、そのうちのいくつかは特に重要です。私たちが取得しようとしているデータが普通ではない方法で送られていることを、教えてくれるからです。それらが存在しないことを確認しておきましょう。[^25]
 
-```python
-class URL:
-    def request(self):
-        # ...
-        assert "transfer-encoding" not in response_headers
-        assert "content-encoding" not in response_headers
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	if _, ok := headers["transfer-encoding"]; ok {
+		return "", fmt.Errorf("transfer-encoding is not supported")
+	}
+	if _, ok := headers["content-encoding"]; ok {
+		return "", fmt.Errorf("content-encoding is not supported")
+	}
+}
 ```
 
 すると、送られてきたデータを得る通常の方法は、ヘッダの後ろにあるすべてを読むことです。
 
-```python
-class URL:
-    def request(self):
-        # ...
-        content = response.read()
-        s.close()
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	body, err := io.ReadAll(response)
+	if err != nil {
+		return "", fmt.Errorf("reading body: %w", err)
+	}
+}
 ```
 
-表示したいのはボディなので、それを返しましょう。
+表示したいのはボディなので、それを返しましょう。接続を閉じる処理は、先ほど `defer` で予約してあります。
 
-```python
-class URL:
-    def request(self):
-        # ...
-        return content
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	return string(body), nil
+}
 ```
 
 では、レスポンスボディのテキストを実際に表示しましょう。
@@ -332,42 +367,63 @@ class URL:
 
 HTMLには*タグ*（tag）と*テキスト*（text）があります。タグはそれぞれ `<` で始まり `>` で終わります。大まかに言えば、タグはある内容がどんな種類のものかを伝え、テキストが実際の内容です。[^26]ほとんどのタグは開始タグと終了タグのペアになっています。たとえばページのタイトルは、`<title>` と `</title>` というタグのペアで囲まれます。各タグは山括弧の中にタグ名（ここでは `title`）を持ち、その後ろに必要に応じて空白と*属性*（attribute）が続きます。ペアとなる終了タグは、`/` とタグ名（属性は付きません）を持ちます。
 
-そこで、ごく単純なWebブラウザを作るために、ページのHTMLを受け取って、その中のテキストだけを（タグは除いて）すべて表示することにしましょう。[^27]これを新しい関数 `show` で行います。[^28]
+そこで、ごく単純なWebブラウザを作るために、ページのHTMLを受け取って、その中のテキストだけを（タグは除いて）すべて表示することにしましょう。[^27]これを新しい関数 `Show` で行います。[^28]
 
-```python
-def show(body):
-    in_tag = False
-    for c in body:
-        if c == "<":
-            in_tag = True
-        elif c == ">":
-            in_tag = False
-        elif not in_tag:
-            print(c, end="")
+```go
+func Show(w io.Writer, body string) {
+	inTag := false
+	for _, c := range body {
+		switch {
+		case c == '<':
+			inTag = true
+		case c == '>':
+			inTag = false
+		case !inTag:
+			fmt.Fprint(w, string(c))
+		}
+	}
+}
 ```
 
-このコードはかなり複雑です。リクエストボディを1文字ずつ処理し、2つの状態を持ちます。現在山括弧の間にいる `in_tag` と、そうでない `not in_tag` です。現在の文字が山括弧のとき、状態が切り替わります。タグの外にある通常の文字は表示されます。[^29]
+このコードはかなり複雑です。リクエストボディを1文字ずつ処理し、2つの状態を持ちます。現在山括弧の間にいる `inTag` と、そうでない `!inTag` です。現在の文字が山括弧のとき、状態が切り替わります。タグの外にある通常の文字は表示されます。[^29]
 
-これで `request` と `show` をつなぎ合わせるだけで、Webページを読み込めます。[^30]
+これで `Request` と `Show` をつなぎ合わせるだけで、Webページを読み込めます。[^30]
 
-```python
-def load(url):
-    body = url.request()
-    show(body)
+```go
+func Load(w io.Writer, u *URL) error {
+	body, err := u.Request()
+	if err != nil {
+		return err
+	}
+	Show(w, body)
+	return nil
+}
 ```
 
-コマンドラインから `load` を実行するために、次のコードを追加してください。
+コマンドラインから `Load` を実行するために、次のコードを追加してください。
 
-```python
-if __name__ == "__main__":
-    import sys
-    load(URL(sys.argv[1]))
+```go
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: browser <url>")
+		os.Exit(2)
+	}
+	u, err := ParseURL(os.Args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if err := Load(os.Stdout, u); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
 ```
 
-最初の行は、Pythonにおける `main` 関数にあたるもので、このスクリプトをコマンドラインから実行したときだけ動きます。このコードは、コマンドラインの最初の引数（`sys.argv[1]`）を読み取り、それをURLとして使います。URL `http://example.org/` でこのコードを実行してみましょう。
+`main` 関数は、Goがプログラムを実行するときに最初に呼ぶ関数です。このコードは、コマンドラインの最初の引数（`os.Args[1]`）を読み取り、それをURLとして使います。URL `http://example.org/` でこのコードを実行してみましょう。
 
 ```sh
-python3 browser.py http://example.org/
+go run ./chapters/01-http http://example.org/
 ```
 
 公式のサンプルWebページへようこそ、という短いテキストが表示されるはずです。[この章](http://browser.engineering/http.html)に対して使ってみることもできます！
@@ -388,68 +444,79 @@ python3 browser.py http://example.org/
 
 > 図の補足: 画像内の英語テキストは訳していません。HTTPSでは、HTTPとTCPの間にTLS層が加わることを表しています。
 
-幸いPythonの `ssl` ライブラリがこれらの詳細をすべて実装してくれているので、暗号化された接続を作るのは、通常の接続を作るのとほとんど同じくらい簡単です。この手軽さは、状況によっては不適切かもしれないデフォルト設定を受け入れることと引き換えですが、教育目的なら問題ありません。
+幸いGoの `crypto/tls` パッケージがこれらの詳細をすべて実装してくれているので、暗号化された接続を作るのは、通常の接続を作るのとほとんど同じくらい簡単です。この手軽さは、状況によっては不適切かもしれないデフォルト設定を受け入れることと引き換えですが、教育目的なら問題ありません。
 
-`ssl` で暗号化された接続を作るのはとても簡単です。すでにソケット `s` を作って `example.org` に接続したとします。接続を暗号化するには、`ssl.create_default_context` で*コンテキスト*（context）`ctx` を作り、そのコンテキストでソケット `s` を*ラップ*（wrap）します。
+`crypto/tls` で暗号化された接続を作るのはとても簡単です。すでに接続 `conn` を作って `example.org` に接続したとします。接続を暗号化するには、`tls.Config` で*設定*（config）`cfg` を作り、その設定で接続 `conn` を*ラップ*（wrap）します。
 
-```python
-import ssl
-ctx = ssl.create_default_context()
-s = ctx.wrap_socket(s, server_hostname=host)
+```go
+cfg := &tls.Config{ServerName: host}
+conn = tls.Client(conn, cfg)
 ```
 
-`wrap_socket` は新しいソケットを返すので、それを変数 `s` に保存し直していることに注意してください。元のソケットではデータを送りたくないからです。暗号化されませんし、混乱のもとにもなります。`server_hostname` 引数は、正しいサーバーに接続したことを確認するために使われます。`Host` ヘッダと一致している必要があります。
+`tls.Client` は新しい接続を返すので、それを変数 `conn` に保存し直していることに注意してください。元の接続でデータを送りたくないからです。暗号化されませんし、混乱のもとにもなります。`ServerName` は、正しいサーバーに接続したことを確認するために使われます。`Host` ヘッダと一致している必要があります。`tls.Config` をゼロ値のままにすると、OSの信頼済み証明書を使って検証する、安全なデフォルト設定になります。
 
-> macOSでは、ほとんどのWebサイトでPythonの `ssl` パッケージを使う前に、[「Install Certificates」というプログラムを実行する](https://stackoverflow.com/questions/52805115/certificate-verify-failed-unable-to-get-local-issuer-certificate)必要があります。
+> 訳注: 原書はmacOSでPythonの `ssl` を使う前に「Install Certificates」というプログラムを実行する必要がある、と説明しています。GoはmacOSではシステムの証明書ストアを使って検証するため、通常はこの手順は要りません。
 
-このコードを `request` に加えてみましょう。まず、どのスキームが使われているかを検出する必要があります。
+このコードを `Request` に加えてみましょう。まず、どのスキームが使われているかを検出する必要があります。
 
-```python
-import ssl
-
-class URL:
-    def __init__(self, url):
-        self.scheme, url = url.split("://", 1)
-        assert self.scheme in ["http", "https"]
-        # ...
+```go
+func ParseURL(raw string) (*URL, error) {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		return nil, fmt.Errorf("invalid URL %q: missing scheme", raw)
+	}
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("unsupported scheme %q", scheme)
+	}
+	u := &URL{Scheme: scheme}
+	// ...
+}
 ```
 
 （ここでは、既存のスキーム解析のコードをこの新しいコードに置き換えることになっている点に注意してください。何を置き換えるべきかは、たいてい文脈とコード自体から明らかです。）
 
 暗号化されたHTTP接続は、通常80番ではなく443番ポートを使います。
 
-```python
-class URL:
-    def __init__(self, url):
-        # ...
-        if self.scheme == "http":
-            self.port = 80
-        elif self.scheme == "https":
-            self.port = 443
+```go
+func ParseURL(raw string) (*URL, error) {
+	// ...
+	if scheme == "http" {
+		u.Port = 80
+	} else {
+		u.Port = 443
+	}
+	// ...
+}
 ```
 
-ソケットを作るときに、このポートを使えます。
+接続するときに、このポートを使えます。
 
-```python
-class URL:
-    def request(self):
-        # ...
-        s.connect((self.host, self.port))
-        # ...
+```go
+func (u *URL) Request() (string, error) {
+	addr := net.JoinHostPort(u.Host, strconv.Itoa(u.Port))
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return "", err
+	}
+	// ...
+}
 ```
 
-次に、`ssl` ライブラリでソケットをラップします。
+次に、`crypto/tls` で接続をラップします。
 
-```python
-class URL:
-    def request(self):
-        # ...
-        s.connect((self.host, self.port))
-        if self.scheme == "https":
-            ctx = ssl.create_default_context()
-            s = ctx.wrap_socket(s, server_hostname=self.host)
-        # ...
+```go
+func (u *URL) Request() (string, error) {
+	// ...
+	if u.Scheme == "https" {
+		cfg := &tls.Config{ServerName: u.Host}
+		conn = tls.Client(conn, cfg)
+	}
+	defer conn.Close()
+	// ...
+}
 ```
+
+`defer conn.Close()` は、ラップし終わった後の `conn` に対して予約する必要があります。先ほどの「GoでのTelnet」の節で `defer` を書いた位置は、ここに移すことになります。
 
 これで、ブラウザはHTTPSのサイトに接続できるはずです。
 
@@ -465,13 +532,18 @@ http://example.org:8080/index.html
 
 URLにポートがあれば、それを解析して使えます。
 
-```python
-class URL:
-    def __init__(self, url):
-        # ...
-        if ":" in self.host:
-            self.host, port = self.host.split(":", 1)
-            self.port = int(port)
+```go
+func ParseURL(raw string) (*URL, error) {
+	// ...
+	if h, p, ok := strings.Cut(u.Host, ":"); ok {
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid port %q: %w", p, err)
+		}
+		u.Host, u.Port = h, port
+	}
+	return u, nil
+}
 ```
 
 カスタムポートはデバッグに便利です。Pythonには、自分のコンピューター上のファイルを配信できる組み込みのWebサーバーがあります。たとえば次のように実行すると、
@@ -481,6 +553,8 @@ python3 -m http.server 8000 -d /some/directory
 ```
 
 `http://localhost:8000/` にアクセスすると、そのディレクトリ内のすべてのファイルが表示されるはずです。これはブラウザをテストするのに良い方法です。
+
+> 訳注: このサーバーはブラウザの実装言語とは関係なく使えるツールなので、原文のままにしています。このリポジトリの自動テストは、Goの `net/http/httptest` で用意したテスト用サーバーに接続します。
 
 > **さらに詳しく（Going Further）**
 >
@@ -502,7 +576,7 @@ python3 -m http.server 8000 -d /some/directory
 
 - URLをスキーム、ホスト、ポート、パスに解析する。
 
-- `socket` と `ssl` ライブラリを使ってそのホストに接続する。
+- `net` と `crypto/tls` パッケージを使ってそのホストに接続する。
 
 - `Host` ヘッダを含むHTTPリクエストをそのホストに送る。
 
@@ -514,18 +588,18 @@ python3 -m http.server 8000 -d /some/directory
 
 ## アウトライン（Outline）
 
-私たちのブラウザの関数、クラス、メソッドの全体は、次のようになっているはずです。
+私たちのブラウザの関数、型、メソッドの全体は、次のようになっているはずです。
 
-```python
-class URL:
-    def __init__(url)
+```go
+type URL struct { ... }
 
-    def request()
+func ParseURL(raw string) (*URL, error)
 
+func (u *URL) Request() (string, error)
 
-def show(body)
+func Show(w io.Writer, body string)
 
-def load(url)
+func Load(w io.Writer, u *URL) error
 ```
 
 ## 演習（Exercises）
@@ -540,13 +614,13 @@ def load(url)
 
 1-5 *`view-source`*。`view-source` スキームのサポートを追加してください。`view-source:http://example.org/` に移動すると、レンダリングされたページの代わりにHTMLソースを表示するようにします。このスキームのサポートを追加してください。ブラウザは、HTMLファイル全体をテキストのように表示するはずです。演習1-4も実装しておくとよいでしょう。
 
-1-6 *Keep-alive*。演習1-1を実装してください。ただし `Connection: close` ヘッダは送らず、代わりに `Connection: keep-alive` を送ります。ソケットからボディを読むときは、`Content-Length` ヘッダで示されたバイト数だけを読み、その後ソケットを閉じないでください。代わりにソケットを保存しておき、同じサーバーへ別のリクエストが行われたら、新しくソケットを作らずに同じソケットを再利用します。（`makefile` に `"rb"` オプションも渡す必要があります。そうしないと、`Content-Length` が報告する値と、読んでいる文字列の長さが一致しないかもしれません。）これにより、同じサーバーへの繰り返しのリクエスト（よくあることです）が高速になります。
+1-6 *Keep-alive*。演習1-1を実装してください。ただし `Connection: close` ヘッダは送らず、代わりに `Connection: keep-alive` を送ります。ソケットからボディを読むときは、`Content-Length` ヘッダで示されたバイト数だけを読み、その後ソケットを閉じないでください。代わりにソケットを保存しておき、同じサーバーへ別のリクエストが行われたら、新しくソケットを作らずに同じソケットを再利用します。（Goでは `io.ReadFull` や `io.LimitReader` で、バイト数を指定して読めます。原書のPythonでは `makefile` に `"rb"` を渡して、文字ではなくバイトで読む必要があります。）これにより、同じサーバーへの繰り返しのリクエスト（よくあることです）が高速になります。
 
 1-7 *リダイレクト*。300番台のエラーコードはリダイレクトを要求します。ブラウザがそれに遭遇したら、`Location` ヘッダで指定されたURLへ新しいリクエストを行うようにしてください。`Location` ヘッダが完全なURLのこともありますが、ホストとスキームを省略して `/` で始まるだけのこともあります（元のリクエストと同じホストとスキームを意味します）。新しいURLがさらにリダイレクトの場合もあるので、そのケースも扱ってください。ただし、リダイレクトのループにはまり込みたくないので、ブラウザが連続して従うリダイレクトの回数に上限を設けてください。この章のページにリダイレクトするURL [http://browser.engineering/redirect](http://browser.engineering/redirect) と、より複雑なリダイレクトの連鎖を行う兄弟分の [/redirect2](http://browser.engineering/redirect2)、[/redirect3](http://browser.engineering/redirect3) で試せます。
 
 1-8 *キャッシュ*。一般に、同じ画像、スタイル、スクリプトが複数のページで使われます。それらを何度もダウンロードするのは無駄です。`GET` でリクエストし、`200` のレスポンスを受け取ったものであれば、どのHTTPレスポンスもキャッシュして一般に問題ありません。[^31]ブラウザにキャッシュを実装し、同じファイルを複数回リクエストしてテストしてください。サーバーは `Cache-Control` ヘッダでキャッシュを制御します。このヘッダ、具体的には `no-store` と `max-age` の値のサポートを追加してください。`Cache-Control` ヘッダにこの2つ以外の値が含まれている場合は、そのレスポンスをキャッシュしないのが無難です。
 
-1-9 *圧縮*。HTTP圧縮のサポートを追加してください。これは、ブラウザが圧縮データを受け付けることを[サーバーに知らせる](https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation)ものです。ブラウザは、値を `gzip` にした `Accept-Encoding` ヘッダを送らなければなりません。サーバーが圧縮をサポートしていれば、レスポンスには値が `gzip` の `Content-Encoding` ヘッダが付きます。その場合、ボディは圧縮されています。このケースのサポートを追加してください。データの展開には、`gzip` モジュールの `decompress` メソッドが使えます。GZipデータは `utf8` エンコードされていないので、`makefile` に `"rb"` を渡して、代わりに生のバイト列で扱ってください。ほとんどのWebサーバーは、[`chunked`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding) と呼ばれる `Transfer-Encoding` で圧縮データを送ります。[^32]それへの対応も追加する必要があります。
+1-9 *圧縮*。HTTP圧縮のサポートを追加してください。これは、ブラウザが圧縮データを受け付けることを[サーバーに知らせる](https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation)ものです。ブラウザは、値を `gzip` にした `Accept-Encoding` ヘッダを送らなければなりません。サーバーが圧縮をサポートしていれば、レスポンスには値が `gzip` の `Content-Encoding` ヘッダが付きます。その場合、ボディは圧縮されています。このケースのサポートを追加してください。データの展開には、`compress/gzip` パッケージの `gzip.NewReader` が使えます。GZipデータは UTF-8 のテキストではないので、展開するまでは生のバイト列のまま扱ってください（原書のPythonでは `gzip` モジュールの `decompress` と、`makefile` への `"rb"` を使います）。ほとんどのWebサーバーは、[`chunked`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding) と呼ばれる `Transfer-Encoding` で圧縮データを送ります。[^32]それへの対応も追加する必要があります。
 
 [^1]: 「URL」は「uniform resource locator」の略です。Webページ（リソース）を識別するための可搬な（uniform）方法であること、そしてそれらのファイルへのアクセス方法も記述している（locator）ことを意味します。
 [^2]: `nslookup.io` のようなDNS検索ツールや `dig` コマンドを使えば、この変換を自分で行えます。（[nslookup.io](https://nslookup.io)）
@@ -560,23 +634,23 @@ def load(url)
 [^10]: これは、同じIPアドレスが複数のホスト名に対応し、複数のWebサイト（たとえば `example.com` と `example.org`）をホストしている場合に役立ちます。`Host` ヘッダは、複数のWebサイトのうちどれが欲しいのかをサーバーに伝えます。これらのWebサイトは、基本的に `Host` ヘッダがないと正しく動作しません。1台のコンピューターで複数のドメインをホストするのは非常によくあることです。
 [^11]: `OK` のようなステータステキストは、実際には何でもよく、機械のためではなく人間のためにあるだけです。
 [^12]: より正確には、サーバーが非があると考えているのはどちらか、です。
-[^13]: Pythonには、URLを解析するための `urllib.parse` というライブラリがありますが、自前で実装したほうが学習に良いと思います。それに、そうすればこの本がPython固有のものになりすぎません。
+[^13]: Goには、URLを解析するための `net/url` というパッケージがありますが、自前で実装したほうが学習に良いと思います。それに、そうすればこの本が特定の言語に固有のものになりすぎません。
 [^14]: `DGRAM` は「datagram」（データグラム）の略で、私は葉書のようなものだと想像しています。
 [^15]: 新しいバージョンのHTTPは、Transmission Control Protocol（TCP）の代わりに[QUIC](https://en.wikipedia.org/wiki/QUIC)というものを使いますが、私たちのブラウザはHTTP 1.0にとどまります。
-[^16]: このコードはPythonの `socket` ライブラリを使っていますが、皆さんのお気に入りの言語にもおそらく非常によく似たライブラリがあるでしょう。このAPIは基本的に標準化されています。Pythonでは、ここで渡しているフラグはデフォルト値なので、実際には `socket.socket()` と呼ぶだけでも構いません。ほかの言語で試している方のために、ここではフラグを残しています。
-[^17]: `send` は実際には数を返します。この場合は `47` です。それは、相手のコンピューターに何バイトのデータを送ったかを表します。たとえば、データの送信途中でネットワーク接続が切れた場合、切れるまでにどれだけ送ったかを知りたいかもしれません。
+[^16]: 原書のPythonでは `socket.socket(family=AF_INET, type=SOCK_STREAM, proto=IPPROTO_TCP)` でソケットを作り、続けて `connect` を呼びます。皆さんのお気に入りの言語にもおそらく非常によく似たライブラリがあるでしょう。このAPIは基本的に標準化されています。Goの `net.Dial` は、この2つの手順をまとめたものです。
+[^17]: `io.WriteString` は実際には書き込んだバイト数と `error` を返します。この場合のバイト数は `47` です。それは、相手のコンピューターに何バイトのデータを送ったかを表します。たとえば、データの送信途中でネットワーク接続が切れた場合、切れるまでにどれだけ送ったかを知りたいかもしれません。ここではバイト数は使わないので `_` で捨て、エラーだけを確認しています。
 [^18]: コンピューターは、どこまでも文字どおりにしか受け取りません。
-[^19]: `encode` と `decode` を呼ぶときは、どの*文字エンコーディング*（character encoding）を使いたいかをコンピューターに伝える必要があります。これは複雑な話題です。ここでは一般的な文字エンコーディングで多くのページで動作する `utf8` を使っていますが、現実の世界ではもっと注意深くある必要があります。
-[^20]: ほかの言語を使っている場合は、`socket.read` しか使えないかもしれません。その場合は、ソケットの状態を確認しながら、ループを自分で書く必要があります。
-[^21]: `utf8` を決め打ちにするのは正しくありませんが、英語のWebサイトの大半ではそれなりに動く近道です。実際には、`Content-Type` ヘッダにはたいてい、ボディのエンコーディングを指定する `charset` 宣言が含まれています。それがない場合でも、ブラウザは `utf8` をデフォルトにはしません。文字の出現頻度から推測し、推測を外すと、� strange áççêñ£ß のような醜い文字が表示されます。
+[^19]: 原書のPythonでは、`encode` と `decode` を呼ぶときに、どの*文字エンコーディング*（character encoding）を使いたいかをコンピューターに伝える必要があります。Goの `[]byte(s)` と `string(b)` はバイトをそのままコピーするだけで、エンコーディングを解釈しません。文字エンコーディングは複雑な話題です。ここでは一般的で多くのページで動作する UTF-8 を前提にしていますが、現実の世界ではもっと注意深くある必要があります。
+[^20]: `bufio` を使わず、接続の `Read` だけを使う場合は、届いた断片を集めるループを自分で書く必要があります。
+[^21]: UTF-8を決め打ちにするのは正しくありませんが、英語のWebサイトの大半ではそれなりに動く近道です。実際には、`Content-Type` ヘッダにはたいてい、ボディのエンコーディングを指定する `charset` 宣言が含まれています。それがない場合でも、ブラウザは `utf8` をデフォルトにはしません。文字の出現頻度から推測し、推測を外すと、� strange áççêñ£ß のような醜い文字が表示されます。
 [^22]: 200が必須だと `assert` することもできました。私たちのブラウザがサポートするコードはそれだけだからです。しかし、返されたボディをそのままレンダリングするほうが良いのです。サーバーは通常、エラーコードに対しても、有用でユーザーが読めるHTMLのエラーページを出力するからです。これも、Webを段階的に実装しやすいことの一例です。
 [^23]: 幸い、プロトコルは混乱を招かない程度には似ています。
-[^24]: `lower` ではなく [`casefold`](https://docs.python.org/3/library/stdtypes.html#str.casefold) を使ったのは、より多くの言語でうまく動作するからです。
+[^24]: 原書のPythonでは、`lower` ではなく [`casefold`](https://docs.python.org/3/library/stdtypes.html#str.casefold) を使っています。より多くの言語でうまく動作するからです。Goでは `strings.ToLower` を使います。ヘッダ名はASCIIなので、これで十分です。
 [^25]: これらのヘッダが存在する場合のブラウザの扱い方は、演習1-9で説明しています。
 [^26]: とはいえ、`img` のように、情報についてのものではなく、それ自体が内容であるタグもあります。
-[^27]: この例でPythonが最終行の `end` を指す `SyntaxError` を出す場合は、Python 3ではなくPython 2で実行している可能性が高いです。必ずPython 3を使ってください。
-[^28]: これはグローバル関数であり、`URL` クラスの中にはないことに注意してください。
-[^29]: `end` 引数は、Pythonに、文字の後ろで改行を出力しないよう伝えます。指定しなければ改行が出力されます。
+[^27]: Goでは `for _, c := range body` が、バイトではなく文字（`rune`）単位で文字列を回します。そのため、UTF-8の多バイト文字（日本語など）も壊れません。
+[^28]: これは `URL` 型のメソッドではなく、パッケージレベルの関数であることに注意してください。出力先を `io.Writer` で受け取るのは、テストで標準出力以外に書き出せるようにするためです。
+[^29]: 原書のPythonでは `end=""` 引数で、文字の後ろの改行を出力しないよう伝えます。Goの `fmt.Fprint` は改行を付けないので（`Fprintln` は付けます）、そのままで大丈夫です。
 [^30]: `show` と同様、これもグローバル関数です。
 [^31]: `301` や `404` など、ほかのステータスコードもキャッシュできる場合があります。
 [^32]: データを圧縮する `Transfer-Encoding` もいくつかあります。あまり一般的には使われません。

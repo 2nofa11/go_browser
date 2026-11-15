@@ -65,13 +65,20 @@ func (b *Browser) Draw(screen *ebiten.Image) {
 		if !Visible(item, b.scroll) || !Drawable(item.C) {
 			continue
 		}
-		op := &text.DrawOptions{}
-		op.GeoM.Translate(float64(item.X), float64(item.Y-b.scroll)) // 画面座標 = ページ座標 - scroll
-		op.PrimaryAlign = text.AlignCenter                           // Tk の create_text は中心が基準
-		op.SecondaryAlign = text.AlignCenter
-		op.ColorScale.ScaleWithColor(color.Black)
-		text.Draw(screen, string(item.C), b.face, op)
+		// 画面座標 = ページ座標 - scroll
+		b.drawText(screen, float64(item.X), float64(item.Y-b.scroll), string(item.C))
 	}
+}
+
+// 原文: Drawing to the Window（canvas.create_text）
+// Tk の create_text は指定した座標がテキストの中心になるので、縦横とも中央揃えにする。
+func (b *Browser) drawText(screen *ebiten.Image, x, y float64, s string) {
+	op := &text.DrawOptions{}
+	op.GeoM.Translate(x, y)
+	op.PrimaryAlign = text.AlignCenter
+	op.SecondaryAlign = text.AlignCenter
+	op.ColorScale.ScaleWithColor(color.Black)
+	text.Draw(screen, s, b.face, op)
 }
 
 func (b *Browser) Layout(outsideWidth, outsideHeight int) (int, int) {
