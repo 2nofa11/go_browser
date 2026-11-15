@@ -193,6 +193,7 @@ func (u *URL) requestHTTP() (string, error) {
 
 // 原文: Displaying the HTML（show）
 func Show(w io.Writer, body string) {
+	var text strings.Builder
 	inTag := false
 	for _, c := range body { // range は rune 単位なので、UTF-8 の多バイト文字も壊さない
 		switch {
@@ -201,10 +202,15 @@ func Show(w io.Writer, body string) {
 		case c == '>':
 			inTag = false
 		case !inTag:
-			fmt.Fprint(w, string(c))
+			text.WriteRune(c)
 		}
 	}
+	// タグを取り除いた後で置き換える。先に置き換えると、&lt;div&gt; がタグと誤認される。
+	fmt.Fprint(w, entities.Replace(text.String()))
 }
+
+// 原文: 演習1-4（エンティティ）
+var entities = strings.NewReplacer("&lt;", "<", "&gt;", ">")
 
 // 原文: Displaying the HTML（load）
 func Load(w io.Writer, u *URL) error {

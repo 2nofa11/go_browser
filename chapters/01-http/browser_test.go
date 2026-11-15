@@ -50,6 +50,26 @@ func TestParseURL(t *testing.T) {
 	}
 }
 
+func TestShowEntities(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"&lt;div&gt;", "<div>"},
+		{"<p>&lt;b&gt;bold&lt;/b&gt;</p>", "<b>bold</b>"}, // 本物のタグは消え、エンティティは文字になる
+		{"1 &lt; 2 &gt; 0", "1 < 2 > 0"},
+		{"&lt;&lt;", "<<"},
+		{"&amp;lt;", "&amp;lt;"}, // &amp; は未対応。&lt; に見える部分もないので変化しない
+	}
+	for _, tt := range tests {
+		var sb strings.Builder
+		Show(&sb, tt.in)
+		if got := sb.String(); got != tt.want {
+			t.Errorf("Show(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestShow(t *testing.T) {
 	var sb strings.Builder
 	Show(&sb, "<html><body>こんにちは <b>world</b></body></html>")
